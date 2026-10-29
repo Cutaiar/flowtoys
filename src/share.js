@@ -14,7 +14,7 @@
 //   gnd  — look | #rrggbb
 //   glow — a number                   (stream-B param: parsed and round-tripped
 //                                      even before its slider exists)
-import { state, set, subscribe } from './state.js';
+import { state, set } from './state.js';
 import { SOURCES } from './subject.js';
 import { looks, textures } from './looks.js';
 import { motion } from './audio.js';
@@ -25,7 +25,6 @@ import * as ui from './ui.js';
 // from a later stream, say). They stay in the serialised map until the user
 // picks something real, so a link round-trips instead of being rewritten.
 const pending = {};
-for (const k of ['look', 'audio', 'spin']) subscribe(k, () => { pending[k] = null; });
 
 const HEX = /^#[0-9a-fA-F]{6}$/;
 const ID = /^[a-z0-9_-]+$/i;
@@ -97,7 +96,7 @@ function validate(p, animateDepth) {
   }
   const look = p.get('look');
   if (look && ID.test(look)) {
-    if (looks.has(look)) out.look = look;
+    if (looks.has(look)) { out.look = look; pending.look = null; }
     else { pending.look = look; notes.push(`look '${look}' isn't in this build yet`); }
   }
   const tex = p.get('tex');
@@ -108,19 +107,19 @@ function validate(p, animateDepth) {
   }
   const uvm = p.get('uv');
   if (uvm === '0' || uvm === '1') out.uvmode = +uvm;
-  const d = num(p.get('d'), 0, 1.5);
+  const d = p.has('d') ? num(p.get('d'), 0, 1.5) : undefined;
   if (d !== undefined) out.depth = d;
-  const amt = num(p.get('amt'), 0, 1);
+  const amt = p.has('amt') ? num(p.get('amt'), 0, 1) : undefined;
   if (amt !== undefined) out.amount = amt;
   const mot = p.get('mot');
   if (mot && ID.test(mot)) {
     if (['file', 'mic'].includes(mot)) { /* local-only sources, never shared */ }
-    else if (motion.has(mot)) out.audio = mot;
+    else if (motion.has(mot)) { out.audio = mot; pending.audio = null; }
     else { pending.audio = mot; notes.push(`motion source '${mot}' isn't in this build yet`); }
   }
   const turn = p.get('turn');
   if (turn && ID.test(turn)) {
-    if (turns.has(turn)) out.spin = turn;
+    if (turns.has(turn)) { out.spin = turn; pending.spin = null; }
     else { pending.spin = turn; notes.push(`turn mode '${turn}' isn't in this build yet`); }
   }
   const gnd = p.get('gnd');
@@ -255,6 +254,16 @@ export function initShare(ctx) {
       applyAll();
       c.style.opacity = '1';
     }, 170);
+  }
+
+  // a user pick in a seg clears the parked unknown id for that group (a
+  // programmatic re-pick — applyAll on load/paste — must not, or a pending
+  // id would drop out of the serialised map before it can round-trip)
+  for (const seg of ['look', 'audio', 'spin']) {
+    document.getElementById(seg)?.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (b && !b.disabled) pending[seg] = null;
+    });
   }
 
   // ---- paste a link or code anywhere to apply it ------------------------

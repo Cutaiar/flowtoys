@@ -224,7 +224,9 @@ function toggleRec(stage, len, btn, badge) {
   // fold the audio file's track into the clip when it is the motion source
   if (state.audio === 'file' && hasAudioFile() && isAudioFilePlaying()) {
     const as = audioFileStream();
-    if (as) for (const t of as.getAudioTracks()) stream.addTrack(t);
+    // clone the track: the shared destination's track must survive stopRec,
+    // which stops every track on this stream — a stopped track can't restart
+    if (as) for (const t of as.getAudioTracks()) stream.addTrack(t.clone());
   }
   const recorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 12e6 });
   const chunks = [];
