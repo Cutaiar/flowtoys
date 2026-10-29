@@ -17,7 +17,8 @@ import { panels } from './ui.js';
 export function initStage(canvas, stageEl, errEl) {
   let renderer;
   try {
-    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+    // alpha: true so export can render a transparent still (clear alpha 0)
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   } catch (e) {
     errEl.textContent = 'This browser could not start WebGL, so the subject cannot be drawn here.';
     errEl.hidden = false;

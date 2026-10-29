@@ -58,6 +58,14 @@ motion.register({ id: 'file', name: 'Audio file', disabled: true,
   levels: (t, n) => fileLevels(n) });
 
 export function hasAudioFile() { return !!audioEl; }
+
+// a MediaStream carrying the loaded file's track, for clip recording
+let mediaDest = null;
+export function audioFileStream() {
+  if (!actx || !analyser) return null;
+  if (!mediaDest) { mediaDest = actx.createMediaStreamDestination(); analyser.connect(mediaDest); }
+  return mediaDest.stream;
+}
 export function isAudioFilePlaying() { return !!(analyser && audioEl && !audioEl.paused); }
 export function pauseAudioFile() { audioEl?.pause(); }
 export function unpauseAudioFile() { audioEl?.play(); }
