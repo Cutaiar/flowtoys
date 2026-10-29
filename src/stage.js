@@ -135,7 +135,9 @@ export function initStage(canvas, stageEl, errEl) {
     }
   }
 
-  function draw() {
+  // direct = raw render for the transparent PNG pass: no composer, no
+  // crossfade overlay, just the scene on a clear-alpha canvas
+  function draw(direct) {
     const now = performance.now();
     const dt = Math.min(0.05, Math.max(0, (now - draw.t) / 1000)); draw.t = now;
 
@@ -152,7 +154,7 @@ export function initStage(canvas, stageEl, errEl) {
     const ft = state.spin === 'float' && !reduced.matches ? 1 : 0;
     U.uFloat.value += (ft - U.uFloat.value) * Math.min(1, dt * 3.5);
 
-    if (state.glow > 0) {
+    if (!direct && state.glow > 0) {
       ensureComposer();
       bloom.strength = state.glow;
       composer.render();
@@ -160,7 +162,7 @@ export function initStage(canvas, stageEl, errEl) {
       renderer.render(scene, camera);
     }
 
-    if (fadeStart >= 0) {
+    if (!direct && fadeStart >= 0) {
       const p = (now - fadeStart) / FADE_MS;
       if (p >= 1) fadeStart = -1;
       else {

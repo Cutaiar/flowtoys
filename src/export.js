@@ -193,13 +193,13 @@ function savePng(stage, scale, transparent) {
   renderer.setPixelRatio(1);
   renderer.setSize(Math.round(w * k), Math.round(h * k), false);
   if (transparent) {
-    // alpha:true on the renderer lets the clear show through; post effects
-    // (bloom, when it lands) are skipped for the transparent pass
+    // alpha:true on the renderer lets the clear show through; draw(direct)
+    // skips the bloom composer and any in-flight crossfade for this pass
     scene.background = null;
     renderer.setClearAlpha(0);
     stage.backdrop.visible = false;
   }
-  stage.draw();
+  stage.draw(transparent);
   stage.canvas.toBlob((blob) => {
     renderer.setPixelRatio(prevRatio);
     renderer.setSize(w, h, false);
