@@ -265,6 +265,12 @@ export function initShare(ctx) {
       if (b && !b.disabled) pending[seg] = null;
     });
   }
+  // the Flat/3D buttons and the audio file controls pick('spin'/'audio')
+  // without a seg click — those are user picks too
+  for (const id of ['form-flat', 'form-3d'])
+    document.getElementById(id)?.addEventListener('click', () => { pending.spin = null; });
+  document.getElementById('audio-file')?.addEventListener('change', () => { pending.audio = null; });
+  document.getElementById('audio-play')?.addEventListener('click', () => { pending.audio = null; });
 
   // ---- paste a link or code anywhere to apply it ------------------------
   document.addEventListener('paste', (e) => {
