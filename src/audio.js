@@ -223,7 +223,7 @@ subscribe('audio', (v) => {
 // ------------------------------------------------------------ gains
 const levels = new Float32Array(MAX_PARTS);
 
-// n = number of gain slots the current subject uses (its pills)
+// n = number of gain slots the current subject uses (its primitives)
 export function updateGains(t, dt, n) {
   const src = motion.get(state.audio);
   const moving = n > 0 && !!src?.levels && (src.active ? src.active() : true);

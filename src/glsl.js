@@ -13,6 +13,7 @@ export const U = {
   uUvMode: { value: 0 },
   uCamDist: { value: 9 },
   uDpr: { value: 1 },
+  uSrcColor: { value: 0 },   // 1 = tint with each part's own SVG colour (aColor)
 };
 
 // the subject's one vertex transform, shared by every material: a pill's
@@ -24,11 +25,20 @@ attribute vec3 aCenter;
 attribute vec2 aAxis;
 attribute float aBase;
 attribute float aIdx;
+attribute float aStretch;   // 0 pull halves apart, 1 uniform scale, 2 major-axis scale
+attribute vec3 aColor;
 uniform float uGain[${MAX_PARTS}];
 uniform float uDepth;
+varying vec3 vSCol;
 void subjectXform(inout vec3 p, inout vec3 n) {
   float g = uGain[int(aIdx + 0.5)];
-  p.y += (p.y >= 0.0 ? 1.0 : -1.0) * aBase * g;
+  if (aStretch < 0.5) {
+    p.y += (p.y >= 0.0 ? 1.0 : -1.0) * aBase * g;
+  } else if (aStretch < 1.5) {
+    p *= g;                      // uniform: normals keep their directions
+  } else {
+    p.y *= g; n.y /= g;          // axis scale: fix the normal with the inverse
+  }
   vec2 pe = vec2(aAxis.y, -aAxis.x);
   vec3 q = vec3(pe * p.x + aAxis * p.y, p.z) + aCenter;
   vec3 m = vec3(pe * n.x + aAxis * n.y, n.z);
@@ -37,6 +47,7 @@ void subjectXform(inout vec3 p, inout vec3 n) {
   m = normalize(vec3(m.xy * d, m.z));
   p = q;
   n = m;
+  vSCol = aColor;
 }
 `;
 
@@ -69,7 +80,7 @@ varying float vNear;
 void main() {
   vec3 p = position;
   vec3 n = normal;
-  subjectXform(p, n);
+  subjectXform(p, n);   // also writes vSCol
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   vView = mv.xyz;
   vN = normalize(normalMatrix * n);
@@ -90,11 +101,13 @@ uniform vec3 uPaper;
 uniform vec3 uBase;
 uniform sampler2D uMap;
 uniform int uHasMap;
+uniform float uSrcColor;   // 1 = paint with each part's own SVG colour (aColor)
 varying vec3 vN;
 varying vec3 vView;
 varying vec2 vUv;
 varying float vIdx;
 varying float vNear;
+varying vec3 vSCol;
 void main() {
   vec3 N = normalize(vN);
   vec3 V = normalize(-vView);
@@ -111,6 +124,7 @@ void main() {
     col = 0.5 + 0.5 * cos(6.2831 * (vec3(0.0, 0.33, 0.67) + v * 0.22 + vIdx * 0.06));
     col *= 0.7 + 0.45 * lam;
     col += pow(rim, 3.0) * 0.5;
+    col = mix(col, col * vSCol * 1.8, uSrcColor);
   } else if (uMode == 1) {
     float shade = clamp(0.12 + 0.95 * lam - 0.25 * rim, 0.0, 1.0);
     float c = 0.7071;
@@ -119,16 +133,17 @@ void main() {
     float r = sqrt(1.0 - shade) * 0.66;
     float w = fwidth(d);
     float ink = 1.0 - smoothstep(r - w, r + w, d);
-    col = mix(uPaper, uInk, ink);
+    col = mix(uPaper, mix(uInk, vSCol, uSrcColor), ink);
   } else if (uMode == 2) {
-    vec3 base = uHasMap == 1 ? texture2D(uMap, vUv).rgb : uBase;
+    vec3 base = uHasMap == 1 ? texture2D(uMap, vUv).rgb * mix(vec3(1.0), vSCol, uSrcColor)
+                            : mix(uBase, vSCol, uSrcColor);
     float band = lam > 0.72 ? 1.0 : lam > 0.32 ? 0.72 : 0.45;
     col = base * band;
     vec3 H = normalize(L + V);
     col += step(0.93, pow(max(dot(N, H), 0.0), 24.0)) * 0.6;
     col = mix(col, uInk, step(0.72, rim) * step(0.05, 1.0 - abs(N.z)));
   } else {
-    col = vec3(1.0);
+    col = mix(vec3(1.0), vSCol * 1.4, uSrcColor);
     a = (0.025 + 0.06 * vNear * vNear);
   }
   gl_FragColor = vec4(col, a);
@@ -139,21 +154,27 @@ void main() {
 export const LINE_FS = /* glsl */`
 uniform vec3 uColor;
 uniform float uAlpha;
+uniform float uSrcColor;
 varying float vNear;
+varying vec3 vSCol;
 void main() {
-  gl_FragColor = vec4(uColor, (0.1 + 0.9 * vNear * vNear) * uAlpha);
+  vec3 c = mix(uColor, vSCol, uSrcColor);
+  gl_FragColor = vec4(c, (0.1 + 0.9 * vNear * vNear) * uAlpha);
   #include <colorspace_fragment>
 }
 `;
 
 export const POINT_FS = /* glsl */`
 uniform vec3 uColor;
+uniform float uSrcColor;
 varying float vNear;
+varying vec3 vSCol;
 void main() {
   vec2 d = gl_PointCoord * 2.0 - 1.0;
   float a = (0.3 + 0.7 * vNear) * (1.0 - smoothstep(0.7, 1.0, length(d)));
   if (a <= 0.0) discard;
-  gl_FragColor = vec4(uColor, a);
+  vec3 c = mix(uColor, vSCol, uSrcColor);   // replace the tint outright — multiplying a coloured dot would crush non-red sources to black
+  gl_FragColor = vec4(c, a);
   #include <colorspace_fragment>
 }
 `;
