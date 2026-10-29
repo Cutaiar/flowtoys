@@ -29,3 +29,13 @@ turns.register({ id: 'turn', name: 'Turn', t: 0, follows: true,
     e.t += dt * LOOP_W;   // one revolution per loop
     pivot.rotation.y = e.t; pivot.rotation.x = 0;
   } });
+
+// Float: a light sway on the pivot while each part bobs in y and z through
+// U.uFloat (phased by part index in SUBJECT_GLSL). The render path eases
+// uFloat toward 1 while this mode is picked and back to 0 when it isn't.
+turns.register({ id: 'float', name: 'Float', t: 0,
+  update(e, dt, pivot) {
+    e.t += dt;
+    pivot.rotation.y = 0.16 * Math.sin(e.t * LOOP_W);
+    pivot.rotation.x = 0.05 * Math.sin(e.t * LOOP_W + 1.3);
+  } });

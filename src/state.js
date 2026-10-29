@@ -4,7 +4,7 @@ const KEY = 'hs-subjects';
 
 export const state = {
   source: 'mark', look: 'clay', tex: 'none', uvmode: 0,
-  depth: 1, depthTarget: null, amount: 0.7, audio: 'voice', spin: 'sway', ground: 'look',
+  depth: 1, depthTarget: null, amount: 0.7, audio: 'voice', spin: 'sway', ground: 'look', glow: 0,
 };
 try { Object.assign(state, JSON.parse(localStorage.getItem(KEY) || '{}'), { depthTarget: null }); } catch {}
 if (state.source === 'custom') state.source = 'mark';

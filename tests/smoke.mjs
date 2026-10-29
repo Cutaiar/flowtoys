@@ -19,7 +19,7 @@ const OUT_DIR = process.env.OUT_DIR || path.join(root, 'tests/out');
 const PORT = 8765;
 mkdirSync(OUT_DIR, { recursive: true });
 
-const LOOKS = ['clay', 'chrome', 'glass', 'pearl', 'toon', 'halftone', 'plasma', 'hyper'];
+const LOOKS = ['clay', 'chrome', 'glass', 'pearl', 'toon', 'halftone', 'plasma', 'hyper', 'neon', 'liquid', 'ink'];
 const SOURCES = ['mark', 'wordmark'];
 
 let server = null;
@@ -63,12 +63,14 @@ try {
   await page.evaluate(() => document.fonts.ready);
   await page.waitForTimeout(300);
 
+  // look/source/texture changes crossfade for ~0.6 s; wait it out so the
+  // stills compare like-for-like
   for (const source of SOURCES) {
     await page.click(`#source [data-v="${source}"]`);
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(700);
     for (const look of LOOKS) {
       await page.click(`#look [data-v="${look}"]`);
-      await page.waitForTimeout(150);
+      await page.waitForTimeout(700);
       await page.screenshot({ path: path.join(OUT_DIR, `${source}-${look}.png`) });
       console.log(`shot ${source}-${look}.png`);
     }
