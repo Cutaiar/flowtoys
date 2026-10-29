@@ -10,6 +10,7 @@ try { Object.assign(state, JSON.parse(localStorage.getItem(KEY) || '{}'), { dept
 if (state.source === 'custom') state.source = 'mark';
 if (state.tex === 'image') state.tex = 'none';
 if (state.audio === 'file') state.audio = 'voice';
+if (state.audio === 'mic') state.audio = 'voice';   // needs a user gesture each load
 
 export function remember() {
   try {
