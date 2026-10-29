@@ -12,8 +12,10 @@
 //   mot  — a motion-source id         (file/mic aren't shareable)
 //   turn — a turn-mode id
 //   gnd  — look | #rrggbb
-//   glow — a number                   (stream-B param: parsed and round-tripped
-//                                      even before its slider exists)
+//   glow — a number                   (parsed and round-tripped even before a
+//                                      build registers the slider)
+//   col  — look | source              (the Colour seg: a look's palette or the
+//                                      SVG's own fills and strokes)
 import { state, set } from './state.js';
 import { SOURCES } from './subject.js';
 import { looks, textures } from './looks.js';
@@ -48,6 +50,7 @@ export function shareMap() {
   m.turn = pending.spin || state.spin;
   m.gnd = state.ground;
   if (Number.isFinite(+state.glow)) m.glow = String(+state.glow);
+  if (state.color === 'source') m.col = 'source';
   return m;
 }
 
@@ -129,6 +132,8 @@ function validate(p, animateDepth) {
     const g = +glow;
     if (Number.isFinite(g)) out.glow = g;
   }
+  const col = p.get('col');
+  if (col === 'look' || col === 'source') out.color = col;
   out._depthAnimate = animateDepth;
   return { out, notes };
 }
@@ -137,7 +142,7 @@ function validate(p, animateDepth) {
 // frame loop lerps state.depth toward state.depthTarget).
 function applyValidated(v) {
   const { out, notes } = v;
-  for (const k of ['source', 'look', 'tex', 'uvmode', 'audio', 'spin', 'ground', 'amount', 'glow']) {
+  for (const k of ['source', 'look', 'color', 'tex', 'uvmode', 'audio', 'spin', 'ground', 'amount', 'glow']) {
     if (out[k] !== undefined) set(k, out[k]);
   }
   if (out.depth !== undefined) {
