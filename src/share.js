@@ -50,7 +50,7 @@ export function shareMap() {
   m.turn = pending.spin || state.spin;
   m.gnd = state.ground;
   if (Number.isFinite(+state.glow)) m.glow = String(+state.glow);
-  if (state.color === 'source') m.col = 'source';
+  m.col = state.color === 'source' ? 'source' : 'look';
   return m;
 }
 
