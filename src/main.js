@@ -10,6 +10,7 @@ import { turns } from './turns.js';
 import { motion, updateGains, loadAudioFile, hasAudioFile, isAudioFilePlaying, pauseAudioFile, unpauseAudioFile, playAudioFile } from './audio.js';
 import * as ui from './ui.js';
 import { initExport } from './export.js';
+import { initShare } from './share.js';
 
 // ------------------------------------------------------------ stage
 const canvas = document.getElementById('view');
@@ -175,7 +176,16 @@ document.getElementById('form-3d').addEventListener('click', () => {
   if (state.spin === 'still') ui.pick('spin', 'sway');
 });
 
-initExport(stage, state);
+// re-apply every control from state: the first paint, and again whenever a
+// shared link, code or preset lands (share.js calls it back)
+function applyAll() {
+  for (const g of ['source', 'look', 'tex', 'uvmode', 'audio', 'spin', 'ground']) ui.pick(g, String(state[g]));
+  depthEl.value = state.depth; amountEl.value = state.amount; amountOut.textContent = (+state.amount).toFixed(2);
+  useSource(state.source);
+}
+
+initExport(stage);
+initShare({ stage, applyAll });
 
 // ------------------------------------------------------------ loop
 function resize() { stage.resize(subject); }
@@ -221,7 +231,5 @@ function tick(now) {
 }
 
 // first frame: restore the remembered controls, then build
-for (const g of ['source', 'look', 'tex', 'uvmode', 'audio', 'spin', 'ground']) ui.pick(g, String(state[g]));
-depthEl.value = state.depth; amountEl.value = state.amount; amountOut.textContent = (+state.amount).toFixed(2);
-useSource(state.source);
+applyAll();
 requestAnimationFrame(tick);
