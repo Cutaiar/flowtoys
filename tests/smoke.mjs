@@ -1,0 +1,85 @@
+// Smoke test: load the page headless, fail on console errors, and screenshot
+// every look for each built-in source into tests/out/ (gitignored).
+//
+//   node tests/smoke.mjs            serve the repo root and test index.html
+//   BASE_URL=http://localhost:9000  test an already-running server instead
+//   OUT_DIR=/tmp/shots              screenshot somewhere else
+//
+// The page is driven deterministically: a seeded Math.random, a fixed rAF
+// clock and a "still / no audio" state in localStorage, so screenshots are
+// comparable run to run.
+import { chromium } from 'playwright';
+import { spawn } from 'node:child_process';
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const root = path.resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
+const OUT_DIR = process.env.OUT_DIR || path.join(root, 'tests/out');
+const PORT = 8765;
+mkdirSync(OUT_DIR, { recursive: true });
+
+const LOOKS = ['clay', 'chrome', 'glass', 'pearl', 'toon', 'halftone', 'plasma', 'hyper'];
+const SOURCES = ['mark', 'wordmark'];
+
+let server = null;
+const base = process.env.BASE_URL || `http://127.0.0.1:${PORT}`;
+if (!process.env.BASE_URL) {
+  server = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1'], {
+    cwd: root, stdio: 'ignore',
+  });
+  for (let i = 0; i < 50; i++) {
+    try { await fetch(base + '/index.html', { method: 'HEAD' }).then(r => r.ok && r.body?.cancel()); break; }
+    catch { await new Promise(r => setTimeout(r, 200)); }
+  }
+}
+
+const browser = await chromium.launch({
+  args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--no-sandbox'],
+});
+const errors = [];
+try {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, colorScheme: 'light' });
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  page.on('pageerror', (e) => errors.push(String(e)));
+
+  await page.addInitScript(() => {
+    let s = 42;
+    Math.random = () => (s = (s * 16807) % 2147483647) / 2147483647;
+    const raf = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (cb) => raf(() => cb(12000));
+    localStorage.setItem('hs-subjects', JSON.stringify({
+      source: 'mark', look: 'clay', tex: 'none', uvmode: 0,
+      depth: 1, amount: 0.7, audio: 'off', spin: 'still', ground: 'look',
+    }));
+  });
+
+  await page.goto(base + '/index.html');
+  await page.waitForFunction(
+    () => document.getElementById('stats')?.textContent !== 'Loading…',
+    null, { timeout: 30000 },
+  );
+  await page.evaluate(() => document.fonts.ready);
+  await page.waitForTimeout(300);
+
+  for (const source of SOURCES) {
+    await page.click(`#source [data-v="${source}"]`);
+    await page.waitForTimeout(150);
+    for (const look of LOOKS) {
+      await page.click(`#look [data-v="${look}"]`);
+      await page.waitForTimeout(150);
+      await page.screenshot({ path: path.join(OUT_DIR, `${source}-${look}.png`) });
+      console.log(`shot ${source}-${look}.png`);
+    }
+  }
+} finally {
+  await browser.close();
+  server?.kill();
+}
+
+if (errors.length) {
+  console.error(`\n${errors.length} console error(s):`);
+  for (const e of errors) console.error('  ' + e);
+  process.exit(1);
+}
+console.log('\nsmoke ok — no console errors');
