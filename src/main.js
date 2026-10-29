@@ -1,7 +1,8 @@
 // The app wiring: build the stage and subject, connect controls to state,
 // and run the frame loop.
 import * as THREE from 'three';
-import { U, FIXED, VS, LINE_FS, POINT_FS } from './glsl.js';
+import { U, FIXED, VS, LINE_FS, POINT_FS, HULL_VS, HULL_FS } from './glsl.js';
+import './idle.js';
 import { SOURCES, buildSubject } from './subject.js';
 import { looks, textures, RED } from './looks.js';
 import { initStage } from './stage.js';
@@ -20,7 +21,13 @@ const { scene, camera, controls, pivot, backdrop } = stage;
 const WHITE = new THREE.Color(0xffffff);
 
 // ------------------------------------------------------------ subject layers
-let subject = null, mesh = null, lines = null, points = null, material = null;
+let subject = null, mesh = null, lines = null, points = null, material = null, hull = null;
+// the ink look's outline: an inverted copy of the subject drawn BackSide
+const hullMat = new THREE.ShaderMaterial({
+  vertexShader: HULL_VS, fragmentShader: HULL_FS,
+  uniforms: { ...U, uColor: { value: new THREE.Color('#121216') }, uOutline: { value: 0 } },
+  side: THREE.BackSide,
+});
 const lineMat = new THREE.ShaderMaterial({
   vertexShader: VS, fragmentShader: LINE_FS,
   uniforms: { ...U, uColor: { value: new THREE.Color('#ffffff') }, uAlpha: { value: 0.9 } },
@@ -39,8 +46,10 @@ function setSubject(svgText) {
   mesh = new THREE.Mesh(subject.mesh, material || looks.get(state.look).mat());
   lines = new THREE.LineSegments(subject.lines, lineMat);
   points = new THREE.Points(subject.points, pointMat);
-  lines.frustumCulled = points.frustumCulled = mesh.frustumCulled = false;
-  pivot.add(mesh, lines, points);
+  hull = new THREE.Mesh(subject.mesh, hullMat);
+  lines.frustumCulled = points.frustumCulled = mesh.frustumCulled = hull.frustumCulled = false;
+  hull.renderOrder = -1;
+  pivot.add(hull, mesh, lines, points);
   applyLook();
   applyUv();
   stage.fit(subject);
@@ -53,6 +62,7 @@ function setSubject(svgText) {
 }
 
 function applyLook() {
+  stage.xfade();   // capture the outgoing frame for the crossfade
   const L = looks.get(state.look);
   if (material) material.dispose();
   material = L.mat();
@@ -60,6 +70,8 @@ function applyLook() {
   mesh.material = material;
   lines.visible = points.visible = !!L.wire;
   backdrop.visible = !!L.backdrop;
+  hull.visible = !!L.hull;
+  hullMat.uniforms.uOutline.value = L.hull || 0;
   applyTex();
   applyGround();
   document.getElementById('tex-note').hidden = !!L.textured;
@@ -78,6 +90,7 @@ function applyColor() {
   material.needsUpdate = true;
 }
 function applyTex() {
+  stage.xfade();   // capture the outgoing frame for the crossfade
   const L = looks.get(state.look);
   const t = L.textured ? textures.get(state.tex)?.tex ?? null : null;
   if (material.isShaderMaterial) {
@@ -100,6 +113,7 @@ function applyGround() {
 
 // ------------------------------------------------------------ controls
 function useSource(v) {
+  stage.xfade();   // capture the outgoing frame for the crossfade
   try { setSubject(v === 'custom' ? SOURCES.custom.svg : SOURCES[v].svg); errEl.hidden = !subject?.warn; }
   catch (e) { ui.showError(e.message || 'That SVG could not be read.'); }
 }
