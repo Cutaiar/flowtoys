@@ -47,7 +47,8 @@ try {
     let s = 42;
     Math.random = () => (s = (s * 16807) % 2147483647) / 2147483647;
     const raf = window.requestAnimationFrame.bind(window);
-    window.requestAnimationFrame = (cb) => raf(() => cb(12000));
+    window.__vt = 12000; window.__advance = false;
+    window.requestAnimationFrame = (cb) => raf(() => cb((window.__vt += window.__advance ? 16 : 0)));
     localStorage.setItem('hs-subjects', JSON.stringify({
       source: 'mark', look: 'clay', tex: 'none', uvmode: 0,
       depth: 1, amount: 0.7, audio: 'off', spin: 'still', ground: 'look',
@@ -72,6 +73,16 @@ try {
       console.log(`shot ${source}-${look}.png`);
     }
   }
+
+  // exercise the motion paths the still/off shots skip: advancing clock,
+  // demo-voice gains and the turn loop
+  await page.click('#source [data-v="mark"]');
+  await page.click('#audio [data-v="voice"]');
+  await page.click('#spin [data-v="turn"]');
+  await page.evaluate(() => { window.__advance = true; });
+  await page.waitForTimeout(800);
+  await page.screenshot({ path: path.join(OUT_DIR, 'mark-motion.png') });
+  console.log('shot mark-motion.png');
 } finally {
   await browser.close();
   server?.kill();
