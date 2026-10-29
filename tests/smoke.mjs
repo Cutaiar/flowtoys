@@ -19,7 +19,7 @@ const OUT_DIR = process.env.OUT_DIR || path.join(root, 'tests/out');
 const PORT = 8765;
 mkdirSync(OUT_DIR, { recursive: true });
 
-const LOOKS = ['clay', 'chrome', 'glass', 'pearl', 'toon', 'halftone', 'plasma', 'hyper'];
+const LOOKS = ['clay', 'chrome', 'glass', 'pearl', 'toon', 'halftone', 'plasma', 'hyper', 'neon', 'liquid', 'ink'];
 const SOURCES = ['mark', 'wordmark'];
 
 let server = null;
@@ -63,16 +63,42 @@ try {
   await page.evaluate(() => document.fonts.ready);
   await page.waitForTimeout(300);
 
+  // look/source/texture changes crossfade for ~0.6 s; wait it out so the
+  // stills compare like-for-like
   for (const source of SOURCES) {
     await page.click(`#source [data-v="${source}"]`);
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(700);
     for (const look of LOOKS) {
       await page.click(`#look [data-v="${look}"]`);
-      await page.waitForTimeout(150);
+      await page.waitForTimeout(700);
       await page.screenshot({ path: path.join(OUT_DIR, `${source}-${look}.png`) });
       console.log(`shot ${source}-${look}.png`);
     }
   }
+
+  // stream C: each fixture SVG is uploaded through the file input and shot
+  // under "Source colours" (exercises aColor through every look path)
+  await page.click('#source [data-v="mark"]');
+  await page.click('#look [data-v="clay"]');
+  await page.click('#color [data-v="source"]');
+  const FIXTURES = ['strokes', 'circles', 'rounded-rect', 'ring', 'holes', 'gradient', 'transforms', 'logo-complex'];
+  for (const name of FIXTURES) {
+    await page.setInputFiles('#svg-file', path.join(root, 'fixtures', `${name}.svg`));
+    await page.waitForFunction(
+      () => document.getElementById('stats')?.textContent.startsWith('Your SVG'),
+      null, { timeout: 15000 },
+    );
+    await page.waitForTimeout(300);
+    await page.screenshot({ path: path.join(OUT_DIR, `fixture-${name}.png`) });
+    console.log(`shot fixture-${name}.png`);
+  }
+
+  // a text-only SVG must surface a clear message, not a crash
+  await page.setInputFiles('#svg-file', path.join(root, 'fixtures', 'text.svg'));
+  await page.waitForSelector('#error:not([hidden])', { timeout: 10000 });
+  await page.screenshot({ path: path.join(OUT_DIR, 'fixture-text.png') });
+  console.log('shot fixture-text.png');
+  await page.click('#color [data-v="look"]');
 
   // exercise the motion paths the still/off shots skip: advancing clock,
   // demo-voice gains and the turn loop

@@ -1,7 +1,8 @@
 // The app wiring: build the stage and subject, connect controls to state,
 // and run the frame loop.
 import * as THREE from 'three';
-import { U, FIXED, VS, LINE_FS, POINT_FS } from './glsl.js';
+import { U, FIXED, VS, LINE_FS, POINT_FS, HULL_VS, HULL_FS } from './glsl.js';
+import './idle.js';
 import { SOURCES, buildSubject } from './subject.js';
 import { looks, textures, RED } from './looks.js';
 import { initStage } from './stage.js';
@@ -18,9 +19,16 @@ const stageEl = document.getElementById('stage');
 const errEl = document.getElementById('error');
 const stage = initStage(canvas, stageEl, errEl);   // throws when WebGL is missing
 const { scene, camera, controls, pivot, backdrop } = stage;
+const WHITE = new THREE.Color(0xffffff);
 
 // ------------------------------------------------------------ subject layers
-let subject = null, mesh = null, lines = null, points = null, material = null;
+let subject = null, mesh = null, lines = null, points = null, material = null, hull = null;
+// the ink look's outline: an inverted copy of the subject drawn BackSide
+const hullMat = new THREE.ShaderMaterial({
+  vertexShader: HULL_VS, fragmentShader: HULL_FS,
+  uniforms: { ...U, uColor: { value: new THREE.Color('#121216') }, uOutline: { value: 0 } },
+  side: THREE.BackSide,
+});
 const lineMat = new THREE.ShaderMaterial({
   vertexShader: VS, fragmentShader: LINE_FS,
   uniforms: { ...U, uColor: { value: new THREE.Color('#ffffff') }, uAlpha: { value: 0.9 } },
@@ -39,26 +47,32 @@ function setSubject(svgText) {
   mesh = new THREE.Mesh(subject.mesh, material || looks.get(state.look).mat());
   lines = new THREE.LineSegments(subject.lines, lineMat);
   points = new THREE.Points(subject.points, pointMat);
-  lines.frustumCulled = points.frustumCulled = mesh.frustumCulled = false;
-  pivot.add(mesh, lines, points);
+  hull = new THREE.Mesh(subject.mesh, hullMat);
+  lines.frustumCulled = points.frustumCulled = mesh.frustumCulled = hull.frustumCulled = false;
+  hull.renderOrder = -1;
+  pivot.add(hull, mesh, lines, points);
   applyLook();
   applyUv();
   stage.fit(subject);
-  const bits = [];
-  if (subject.pills) bits.push(`${subject.pills} capsule${subject.pills === 1 ? '' : 's'}`);
-  if (subject.solids) bits.push(`${subject.solids} extruded path${subject.solids === 1 ? '' : 's'}`);
+  const KIND = { capsule: ['capsule', 'capsules'], sphere: ['sphere', 'spheres'], ellipsoid: ['ellipsoid', 'ellipsoids'], rbox: ['rounded box', 'rounded boxes'], torus: ['torus', 'tori'], extruded: ['extruded path', 'extruded paths'] };
+  const bits = Object.entries(subject.counts).filter(([, n]) => n).map(([k2, n]) => `${n} ${KIND[k2][n === 1 ? 0 : 1]}`);
   if (subject.dropped) bits.push('backdrop dropped');
   bits.push(`${subject.tris.toLocaleString()} tris`);
+  if (subject.warn) ui.showError(subject.warn);
   document.getElementById('stats').textContent = `${state.source === 'custom' ? 'Your SVG' : SOURCES[state.source].name} · ${bits.join(' · ')}`;
 }
 
 function applyLook() {
+  stage.xfade();   // capture the outgoing frame for the crossfade
   const L = looks.get(state.look);
   if (material) material.dispose();
   material = L.mat();
+  if (!material.isShaderMaterial) material.userData.srcBase = material.color.clone();
   mesh.material = material;
   lines.visible = points.visible = !!L.wire;
   backdrop.visible = !!L.backdrop;
+  hull.visible = !!L.hull;
+  hullMat.uniforms.uOutline.value = L.hull || 0;
   applyTex();
   applyGround();
   document.getElementById('tex-note').hidden = !!L.textured;
@@ -66,8 +80,18 @@ function applyLook() {
     const entry = b.closest('#tex') ? textures.get(b.dataset.v) : null;
     b.disabled = !L.textured || !!entry?.disabled;
   });
+  applyColor();
+}
+function applyColor() {
+  const src = state.color === 'source';
+  U.uSrcColor.value = src ? 1 : 0;   // shared: mesh, line and point shaders all read it
+  if (material.isShaderMaterial) return;
+  material.vertexColors = src;
+  material.color.copy(src ? WHITE : material.userData.srcBase);   // a dark diffuse (Pearl) would swallow vertex colours
+  material.needsUpdate = true;
 }
 function applyTex() {
+  stage.xfade();   // capture the outgoing frame for the crossfade
   const L = looks.get(state.look);
   const t = L.textured ? textures.get(state.tex)?.tex ?? null : null;
   if (material.isShaderMaterial) {
@@ -90,11 +114,24 @@ function applyGround() {
 
 // ------------------------------------------------------------ controls
 function useSource(v) {
-  try { setSubject(v === 'custom' ? SOURCES.custom.svg : SOURCES[v].svg); errEl.hidden = true; }
+  stage.xfade();   // capture the outgoing frame for the crossfade
+  try { setSubject(v === 'custom' ? SOURCES.custom.svg : SOURCES[v].svg); errEl.hidden = !subject?.warn; }
   catch (e) { ui.showError(e.message || 'That SVG could not be read.'); }
 }
 
 // registry-driven segmented controls
+// Colour: "Look's own" or the SVG's own fills/strokes (aColor), mounted into
+// the Look section without touching index.html.
+{
+  const label = document.createElement('div');
+  label.className = 'label'; label.textContent = 'Colour';
+  const seg = document.createElement('div');
+  seg.className = 'seg'; seg.id = 'color';
+  ui.panels.get('sec-look').append(label, seg);
+}
+ui.fillSeg('color', [{ id: 'look', name: "Look's own" }, { id: 'source', name: 'Source colours' }]);
+ui.bindSeg('color', applyColor);
+
 ui.fillSeg('look', looks.entries());
 ui.fillSeg('tex', textures.entries());
 ui.fillSeg('audio', motion.entries());
@@ -179,7 +216,7 @@ document.getElementById('form-3d').addEventListener('click', () => {
 // re-apply every control from state: the first paint, and again whenever a
 // shared link, code or preset lands (share.js calls it back)
 function applyAll() {
-  for (const g of ['source', 'look', 'tex', 'uvmode', 'audio', 'spin', 'ground']) ui.pick(g, String(state[g]));
+  for (const g of ['source', 'look', 'color', 'tex', 'uvmode', 'audio', 'spin', 'ground']) ui.pick(g, String(state[g]));
   depthEl.value = state.depth; amountEl.value = state.amount; amountOut.textContent = (+state.amount).toFixed(2);
   useSource(state.source);
 }
@@ -223,7 +260,7 @@ function tick(now) {
     const d = camera.position.length();
     camera.position.lerp(new THREE.Vector3(0, 0, d), Math.min(1, dt * 6));
   }
-  updateGains(motionOn ? t : 0, dt, subject ? Math.min(subject.pills, FIXED) : 0);
+  updateGains(motionOn ? t : 0, dt, subject ? Math.min(subject.movers, FIXED) : 0);
   controls.update();
   U.uCamDist.value = camera.position.distanceTo(controls.target);
   stage.draw();

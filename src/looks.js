@@ -1,5 +1,5 @@
 // Looks and textures as registries. A look entry:
-//   { id, name, swatch, ground, textured, backdrop, wire, mat() }
+//   { id, name, swatch, ground, textured, backdrop, wire, hull, wobble, glow, mat() }
 //     id       — the value stored in state.look
 //     name     — button label
 //     swatch   — optional .sw CSS class for the button's colour dot
@@ -7,12 +7,16 @@
 //     textured — accepts a texture map (also enables the texture controls)
 //     backdrop — shows the refraction backdrop plane behind the subject
 //     wire     — draws the line and point layers
+//     hull     — screen-width inverted-hull outline width (0 or absent: none)
+//     wobble   — uWobble amplitude applied in the shared vertex transform
+//     glow     — default bloom strength (0–2), applied when the look is picked
 //     mat()    — returns a fresh material (each call; the old one is disposed)
 // A texture entry: { id, name, tex, disabled } — tex is a THREE.Texture
 // (or null), disabled keeps the button greyed out until content arrives.
 import * as THREE from 'three';
 import { U, VS, FS, subjectize } from './glsl.js';
 import { createRegistry } from './registry.js';
+import { state, subscribe } from './state.js';
 
 export const CREAM = '#FFFFEB', TEAL = '#034F46', RED = '#FF2B2B';
 
@@ -58,6 +62,21 @@ looks.register({ id: 'plasma', name: 'Plasma', swatch: 'plasma', ground: '#05060
   mat: () => customMat(0) });
 looks.register({ id: 'hyper', name: 'Wireframe', swatch: 'hyper', ground: '#000000', wire: true,
   mat: () => customMat(3) });
+looks.register({ id: 'neon', name: 'Neon', swatch: 'neon', ground: '#06040A', glow: 1.1,
+  mat: () => customMat(4) });
+looks.register({ id: 'liquid', name: 'Liquid', swatch: 'liquid', ground: '#0A0E14', textured: true, wobble: 1, glow: 0.35,
+  mat: () => subjectize(new THREE.MeshPhysicalMaterial({
+    color: '#ffffff', metalness: 1, roughness: 0.06, envMapIntensity: 1.45, clearcoat: 0.5, clearcoatRoughness: 0.1 })) });
+looks.register({ id: 'ink', name: 'Ink', swatch: 'ink', ground: '#F6F1E3', hull: 0.008,
+  mat: () => customMat(5, { ink: '#121216', paper: '#F6F1E3' }) });
+
+// each look's glow default, applied when the look is picked; the glow slider
+// can still move off it afterwards
+for (const e of looks.entries()) e.glow = e.glow ?? 0;
+
+// the wobble flag turns the liquid vertex displacement on and off with the look
+subscribe('look', (id) => { U.uWobble.value = looks.get(id)?.wobble || 0; });
+U.uWobble.value = looks.get(state.look)?.wobble || 0;
 
 // ------------------------------------------------------------ textures
 export function canvasTex(draw, size = 512) {
