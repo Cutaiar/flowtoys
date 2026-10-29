@@ -119,6 +119,13 @@ async function startMic() {
     ensureCtx().createMediaStreamSource(stream).connect(micAnalyser);
     micCeil = -60; micLast = 0;
     ensureCtx().resume();
+    stream.getTracks().forEach((tr) => tr.addEventListener('ended', () => {
+      // the device was unplugged or capture ended elsewhere — drop the source
+      if (micStream !== stream) return;
+      const was = state.audio === 'mic';
+      stopMic();
+      if (was) { set('audio', 'voice'); showError('The microphone was disconnected.'); }
+    }));
     return true;
   }).catch(() => {
     if (state.audio === 'mic') {
@@ -153,7 +160,9 @@ function micLevels(n) {
     const tilt = n > 1 ? 12 * i / (n - 1) : 6;   // +12 dB across the range, so sibilants reach the right bars
     return Math.min(1, Math.max(0, (db + tilt + sensDb - (micCeil - 42)) / 38));
   });
-  updateMicMeter(Math.max(...out));
+  // the meter shows the raw input peak (-75 dB gate floor .. -15 dB full) —
+  // the auto-gained bands would pin it at 100% whenever anything is heard
+  updateMicMeter(Math.min(1, Math.max(0, (peak + 75) / 60)));
   return out;
 }
 motion.register({ id: 'mic', name: 'Microphone',
@@ -168,7 +177,8 @@ let micFill = null, micBox = null;
   if (sec) {
     micBox = document.createElement('div');
     micBox.className = 'group';
-    micBox.hidden = state.audio !== 'mic';
+    // .group's display:flex beats the UA [hidden] rule — toggle inline display
+    micBox.style.display = state.audio === 'mic' ? '' : 'none';
     const lab = document.createElement('div');
     lab.className = 'label';
     lab.textContent = 'Mic level';
@@ -197,10 +207,16 @@ function updateMicMeter(level) {
 let lastAudio = state.audio;
 subscribe('audio', (v) => {
   const prev = lastAudio; lastAudio = v;
-  if (micBox) micBox.hidden = v !== 'mic';
+  if (micBox) micBox.style.display = v === 'mic' ? '' : 'none';
   if (v !== 'mic') { stopMic(); return; }
   startMic().then((ok) => {
-    if (!ok && state.audio === 'mic') set('audio', prev === 'mic' ? 'off' : prev);
+    if (!ok && state.audio === 'mic') {
+      const back = prev === 'mic' ? 'off' : prev;
+      set('audio', back);
+      // a programmatic set skips the seg click handler that pauses/resumes
+      // the file — restart it here so a refused prompt doesn't strand it
+      if (back === 'file' && audioEl?.paused) unpauseAudioFile();
+    }
   });
 });
 
