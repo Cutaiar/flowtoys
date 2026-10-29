@@ -27,6 +27,7 @@ function customMat(mode, extra = {}) {
       uBase: { value: new THREE.Color(extra.base || '#FFB24A') },
       uMap: { value: null },
       uHasMap: { value: 0 },
+      uSrcColor: { value: 0 },
     },
     transparent: mode === 3,
     depthWrite: mode !== 3,

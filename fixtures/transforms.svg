@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 320" width="260" height="160">
+  <defs>
+    <path id="teardrop" d="M 0 -28 C 16 -10 20 4 0 26 C -20 4 -16 -10 0 -28 Z"/>
+  </defs>
+  <g transform="translate(130 80)">
+    <use href="#teardrop" fill="#e2574c"/>
+    <use href="#teardrop" fill="#d8791e" transform="rotate(72)"/>
+    <use href="#teardrop" fill="#3aa97c" transform="rotate(144)"/>
+    <use href="#teardrop" fill="#4c8de2" transform="rotate(216)"/>
+    <use href="#teardrop" fill="#7d5ac8" transform="rotate(288)"/>
+  </g>
+  <g transform="translate(390 80) scale(0.6) rotate(20)">
+    <rect x="-80" y="-40" width="160" height="80" rx="20" fill="#333a4a"/>
+  </g>
+  <rect x="0" y="0" width="520" height="20" fill="none" display="none"/>
+</svg>

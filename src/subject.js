@@ -1,10 +1,28 @@
-// Geometry from a vector source: parse filled SVG paths, build pills as
-// capsules and everything else as beveled extrusions, merge into one
-// indexed BufferGeometry per layer (mesh, lines, points).
+// Geometry from a vector source: parse filled AND stroked SVG paths, shape-
+// match each one to a primitive (capsule, sphere, ellipsoid, rounded box,
+// torus) or a beveled extrusion, then merge into one indexed BufferGeometry
+// per layer (mesh, lines, points).
+//
+//   item            one flat outline {pts, holes, area, perim, box, color, lift}
+//   primitive       a shape with a gain slot: it stretches/scales with audio
+//   solid           every other path: extruded once, fixed at slot FIXED
+//
+// Shape rules, in order (no holes): circle -> sphere (uniform scale),
+// stadium -> capsule (caps pulled apart), ellipse -> ellipsoid (major-axis
+// scale), rounded rect -> rounded box (caps pulled apart);
+// (one hole): circular ring -> torus (uniform scale).
+// Everything else is extruded with a rounded bevel like before.
 import * as THREE from 'three';
 import { SVGLoader } from 'three/addons/loaders/SVGLoader.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeVertices, toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
 import { FIXED } from './glsl.js';
+
+// per-vertex stretch mode (aStretch), read by subjectXform in glsl.js:
+//   0 pull halves apart along aBase  (capsule, rounded box)
+//   1 uniform scale                  (sphere, torus)
+//   2 scale along the major axis     (ellipsoid)
+export const STRETCH = { pull: 0, uniform: 1, axis: 2 };
 
 // ------------------------------------------------------------ the sources
 export const SOURCES = {
@@ -22,34 +40,293 @@ function perimeter(pts) {
   for (let i = 0; i < pts.length; i++) s += pts[i].distanceTo(pts[(i + 1) % pts.length]);
   return s;
 }
+function polyArea(pts) {
+  let s = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    s += a.x * b.y - b.x * a.y;
+  }
+  return s / 2;
+}
+function pointInPoly(p, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i], b = poly[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+// ------------------------------------------------------------ paint
+
+// '#id' -> [{color, alpha}] for linearGradient/radialGradient stops
+function gradientColors(doc) {
+  const map = new Map();
+  for (const g of doc.querySelectorAll('linearGradient, radialGradient')) {
+    if (!g.id) continue;
+    const stops = [];
+    for (const s of g.querySelectorAll('stop')) {
+      const c = s.getAttribute('stop-color') || s.style?.stopColor;
+      if (!c) continue;
+      const a = parseFloat(s.getAttribute('stop-opacity') ?? s.style?.stopOpacity ?? '1');
+      stops.push({ color: c, alpha: isNaN(a) ? 1 : a });
+    }
+    if (stops.length) map.set(g.id, stops);
+  }
+  return map;
+}
+
+// a paint string -> THREE.Color; gradients give a representative (mean) colour
+function colorOf(paint, gradients) {
+  if (!paint || paint === 'none' || paint === 'currentColor') return null;
+  const m = /^url\(\s*['"]?#([^)'"]+)['"]?\s*\)/.exec(paint);
+  if (m) {
+    const stops = gradients.get(m[1]);
+    if (!stops?.length) return null;
+    const c = new THREE.Color(0, 0, 0);
+    let a = 0;
+    for (const s of stops) {
+      try { const sc = new THREE.Color().setStyle(s.color); c.r += sc.r * s.alpha; c.g += sc.g * s.alpha; c.b += sc.b * s.alpha; a += s.alpha; }
+      catch { /* unparseable stop */ }
+    }
+    return a > 0 ? c.multiplyScalar(1 / a) : null;
+  }
+  try { return new THREE.Color().setStyle(paint); } catch { return null; }
+}
+
+// ------------------------------------------------------------ svg helpers
+
+// a path is hidden when its own style or an ancestor's hides it
+// (display is not inherited through SVGLoader's style map, so walk the DOM)
+function hidden(node, style) {
+  if (style.visibility === 'hidden' || style.visibility === 'collapse') return true;
+  for (let el = node; el && el.nodeType === 1; el = el.parentNode) {
+    if (el.getAttribute?.('display') === 'none') return true;
+    const s = el.style;
+    if (s && (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse')) return true;
+  }
+  return false;
+}
+
+function mkItem(pts, holes, color, lift) {
+  if (pts.length && pts[0].distanceTo(pts[pts.length - 1]) < 1e-6) pts = pts.slice(0, -1);
+  if (pts.length < 3) return null;
+  let area = Math.abs(polyArea(pts));
+  for (const h of holes) area -= Math.abs(polyArea(h));
+  if (area <= 0) return null;
+  return { pts, holes, area, perim: perimeter(pts), box: bbox(pts), color, lift };
+}
+
+// pointsToStroke returns a triangulated strip, not an outline: recover the
+// boundary loops from it. A stroked open path is one loop; a stroked closed
+// path is two (outer + inner, which becomes a hole).
+function strokeLoops(geo) {
+  const pos = geo.attributes.position;
+  // the strip's shared vertices differ by float noise (~1e-6 from rotations):
+  // snap to 0.001 so shared positions collapse and interior edges pair up
+  const keyOf = (x, y) => `${x.toFixed(3)},${y.toFixed(3)}`;
+  const vid = new Map();   // position key -> deduped vertex id
+  const ids = [];
+  for (let i = 0; i < pos.count; i++) {
+    const k = keyOf(pos.getX(i), pos.getY(i));
+    if (!vid.has(k)) vid.set(k, vid.size);
+    ids.push(vid.get(k));
+  }
+  const pts = [...vid.keys()].map(k => { const [x, y] = k.split(','); return new THREE.Vector2(+x, +y); });
+  // T-junctions: a vertex can sit ON another triangle's edge (the cap fan's
+  // centre lands on the last body edge). Split every edge at vertices lying
+  // on it first, or interior chords get miscounted as boundary.
+  const splits = [];   // per-edge list of interior split vertices
+  const triEdges = [];
+  for (let t = 0; t < ids.length; t += 3) for (let e = 0; e < 3; e++) {
+    const a = ids[t + e], b = ids[t + (e + 1) % 3];
+    if (a !== b) triEdges.push([a, b]);
+  }
+  const eps2 = 1e-6;
+  const splitEdge = (a, b) => {
+    const ax = pts[a].x, ay = pts[a].y, bx = pts[b].x, by = pts[b].y;
+    const dx = bx - ax, dy = by - ay, len2 = dx * dx + dy * dy;
+    const inner = [];
+    if (len2 > eps2) for (let c = 0; c < pts.length; c++) {
+      if (c === a || c === b) continue;
+      const t = ((pts[c].x - ax) * dx + (pts[c].y - ay) * dy) / len2;
+      if (t <= 1e-3 || t >= 1 - 1e-3) continue;
+      const px = ax + t * dx - pts[c].x, py = ay + t * dy - pts[c].y;
+      if (px * px + py * py < eps2 * len2) inner.push([t, c]);
+    }
+    inner.sort((p, q) => p[0] - q[0]);
+    const chain = [a, ...inner.map(p => p[1]), b];
+    for (let i = 0; i + 1 < chain.length; i++) splits.push([chain[i], chain[i + 1]]);
+  };
+  for (const [a, b] of triEdges) splitEdge(a, b);
+  const ekey = (a, b) => (a < b ? a * 131072 + b : b * 131072 + a);
+  const use = new Map();
+  for (const [a, b] of splits) use.set(ekey(a, b), (use.get(ekey(a, b)) || 0) + 1);
+  const adj = new Map();   // boundary vertex -> boundary neighbours
+  for (const [a, b] of splits) {
+    if (use.get(ekey(a, b)) !== 1) continue;
+    (adj.get(a) ?? adj.set(a, []).get(a)).push(b);
+    (adj.get(b) ?? adj.set(b, []).get(b)).push(a);
+  }
+  // walk directed boundary edges: where two outlines touch (miter/join
+  // vertices give a boundary vertex degree 4), continue straightest — that
+  // stays on the same rail of the strip.
+  const loops = [];
+  const usedDir = new Set();
+  for (const [start, firsts] of adj) for (const first of firsts) {
+    if (usedDir.has(start * 131072 + first)) continue;
+    const loop = [start];
+    let prev = start, cur = first, guard = 0;
+    usedDir.add(start * 131072 + first);
+    usedDir.add(first * 131072 + start);
+    while (cur !== start && guard++ < ids.length + 2) {
+      loop.push(cur);
+      const nb = (adj.get(cur) || []).filter(w => !usedDir.has(cur * 131072 + w));
+      if (!nb.length) break;
+      const dx = pts[cur].x - pts[prev].x, dy = pts[cur].y - pts[prev].y;
+      const dl = Math.hypot(dx, dy) || 1;
+      let best = nb[0], bdot = -2;
+      for (const w of nb) {
+        const ex = pts[w].x - pts[cur].x, ey = pts[w].y - pts[cur].y;
+        const d = (dx * ex + dy * ey) / (dl * (Math.hypot(ex, ey) || 1));
+        if (d > bdot) { bdot = d; best = w; }
+      }
+      usedDir.add(cur * 131072 + best);
+      usedDir.add(best * 131072 + cur);   // each boundary edge is walked once, either way
+      prev = cur; cur = best;
+    }
+    if (cur === start && loop.length >= 3) {
+      const poly = loop.map(i => pts[i]);
+      loops.push({ poly, area: Math.abs(polyArea(poly)) });
+    }
+  }
+  loops.sort((a, b) => b.area - a.area);
+  const items = [];
+  for (const l of loops) {
+    const outer = items.find(it => pointInPoly(l.poly[0], it.pts));
+    if (outer) outer.holes.push(l.poly);
+    else items.push({ pts: l.poly, holes: [] });
+  }
+  return items;
+}
+
+// ------------------------------------------------------------ shape rules
 
 // a filled path whose area is a stadium's for its box is a pill: it becomes a capsule
 function asPill(it) {
-  if (it.holes.length) return null;
   const { w, h } = it.box;
   const r = Math.min(w, h) / 2;
   if (r <= 0) return null;
   const want = w * h - (4 - Math.PI) * r * r;
   if (Math.abs(it.area - want) / want > 0.025) return null;
   const vertical = h >= w;
-  return { cx: it.box.x0 + w / 2, cy: it.box.y0 + h / 2, r, half: (Math.max(w, h) - 2 * r) / 2, vertical };
+  return { type: 'capsule', cx: it.box.x0 + w / 2, cy: it.box.y0 + h / 2, r, half: (Math.max(w, h) - 2 * r) / 2, vertical };
 }
 
+function asCircle(box, area) {
+  const { w, h } = box;
+  if (w <= 0 || h <= 0 || Math.abs(w - h) / Math.max(w, h) > 0.03) return null;
+  const r = (w + h) / 4;
+  if (Math.abs(area - Math.PI * r * r) / (Math.PI * r * r) > 0.03) return null;
+  return r;
+}
+function asSphere(it) {
+  const r = asCircle(it.box, it.area);
+  if (!r) return null;
+  return { type: 'sphere', cx: it.box.x0 + it.box.w / 2, cy: it.box.y0 + it.box.h / 2, r };
+}
+function asEllipsoid(it) {
+  const { w, h } = it.box;
+  if (w <= 0 || h <= 0) return null;
+  const a = Math.max(w, h) / 2, b = Math.min(w, h) / 2;
+  if (Math.abs(it.area - Math.PI * a * b) / (Math.PI * a * b) > 0.03) return null;
+  return { type: 'ellipsoid', cx: it.box.x0 + w / 2, cy: it.box.y0 + h / 2, a, b, vertical: h >= w };
+}
+// a circle path with one circular, concentric hole is a ring: it becomes a torus
+function asTorus(it) {
+  if (it.holes.length !== 1) return null;
+  const outerArea = Math.abs(polyArea(it.pts));
+  const R = asCircle(it.box, outerArea);
+  if (!R) return null;
+  const hb = bbox(it.holes[0]);
+  const r = asCircle(hb, Math.abs(polyArea(it.holes[0])));
+  if (!r || r >= R) return null;
+  const cx = it.box.x0 + it.box.w / 2, cy = it.box.y0 + it.box.h / 2;
+  if (Math.abs(hb.x0 + hb.w / 2 - cx) > 0.08 * R || Math.abs(hb.y0 + hb.h / 2 - cy) > 0.08 * R) return null;
+  return { type: 'torus', cx, cy, R, r };
+}
+// area picks a corner radius; the perimeter has to match the rounded-rect
+// perimeter for that radius, which keeps stadiums (pill) and blobs out
+function asRoundedBox(it) {
+  const { w, h } = it.box;
+  if (w <= 0 || h <= 0) return null;
+  const r2 = (w * h - it.area) / (4 - Math.PI);
+  if (r2 <= 0) return null;
+  const r = Math.sqrt(r2);
+  const half = Math.min(w, h) / 2;
+  if (r >= half || r < 0.03 * half) return null;
+  const want = 2 * (w + h) - (8 - 2 * Math.PI) * r;
+  if (Math.abs(it.perim - want) / want > 0.04) return null;
+  return { type: 'rbox', cx: it.box.x0 + w / 2, cy: it.box.y0 + h / 2, w, h, r, vertical: h >= w };
+}
+
+function detectPrimitive(it) {
+  if (it.holes.length) return asTorus(it);
+  return asSphere(it) || asPill(it) || asEllipsoid(it) || asRoundedBox(it);
+}
+
+// ------------------------------------------------------------ parse
+
 export function parseSource(svgText) {
+  // SVGLoader only resolves <use xlink:href>; modern files often write plain href
+  if (/<use[\s>]/.test(svgText)) {
+    if (!/xmlns:xlink=/.test(svgText)) svgText = svgText.replace(/<svg\b/, '<svg xmlns:xlink="http://www.w3.org/1999/xlink"');
+    svgText = svgText.replace(/<use\b([^>]*?)(?<!xlink:)href=/g, '<use$1 xlink:href=');
+  }
+  const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+  const gradients = gradientColors(doc);
+  const texts = doc.querySelectorAll('text').length;
   const data = new SVGLoader().parse(svgText);
   const items = [];
   for (const path of data.paths) {
-    const fill = path.userData?.style?.fill;
-    if (fill === 'none' || fill === 'transparent') continue;
-    for (const shape of SVGLoader.createShapes(path)) {
-      const ex = shape.extractPoints(24);
-      if (ex.shape.length < 3) continue;
-      let area = Math.abs(THREE.ShapeUtils.area(ex.shape));
-      for (const h of ex.holes) area -= Math.abs(THREE.ShapeUtils.area(h));
-      items.push({ pts: ex.shape, holes: ex.holes, area, perim: perimeter(ex.shape), box: bbox(ex.shape) });
+    const style = path.userData?.style || {};
+    if (hidden(path.userData?.node, style)) continue;
+    if (style.opacity !== undefined && +style.opacity <= 0) continue;
+    const fill = style.fill, stroke = style.stroke;
+    const fillA = +(style.fillOpacity ?? 1) * +(style.opacity ?? 1);
+    const strokeA = +(style.strokeOpacity ?? 1) * +(style.opacity ?? 1);
+    const hasFill = fill !== 'none' && fill !== 'transparent' && fillA > 0;
+    const hasStroke = stroke && stroke !== 'none' && stroke !== 'transparent' && strokeA > 0;
+    const color = colorOf(fill, gradients) || colorOf(stroke, gradients) || new THREE.Color(1, 1, 1);
+    if (hasFill) {
+      for (const shape of SVGLoader.createShapes(path)) {
+        const ex = shape.extractPoints(24);
+        const it = mkItem(ex.shape, ex.holes, color, 0);
+        if (it) items.push(it);
+      }
+    }
+    if (hasStroke) {
+      const st = { ...style, strokeWidth: style.strokeWidth > 0 ? style.strokeWidth : 1 };
+      const colorS = colorOf(stroke, gradients) || colorOf(fill, gradients) || new THREE.Color(1, 1, 1);
+      for (const sub of path.subPaths) {
+        const pts = sub.getPoints(24);
+        if (pts.length < 2) continue;
+        const geo = SVGLoader.pointsToStroke(pts, st, 16);
+        if (!geo) continue;
+        for (const l of strokeLoops(geo)) {
+          const it = mkItem(l.pts, l.holes, colorS, 0.008);   // slight lift so fills and strokes don't z-fight flat
+          if (it) items.push(it);
+        }
+        geo.dispose();
+      }
     }
   }
-  if (!items.length) throw new Error('That SVG has no filled paths to build from. Outlines (strokes) are not read yet.');
+  if (!items.length) {
+    if (texts) throw new Error('That SVG is all <text> — convert the text to outlines first (Object to Path / Create Outlines in your editor).');
+    throw new Error('That SVG has no filled or stroked paths to build from.');
+  }
+  const warnings = [];
+  if (texts) warnings.push(`${texts} <text> element${texts === 1 ? '' : 's'} skipped — convert text to outlines to include ${texts === 1 ? 'it' : 'them'}.`);
   // a path that covers the whole artboard behind the rest is a backdrop, not the subject
   let dropped = 0;
   if (items.length > 1) {
@@ -59,11 +336,13 @@ export function parseSource(svgText) {
       items.splice(big, 1); dropped = 1;
     }
   }
-  return { items, dropped };
+  return { items, dropped, warnings };
 }
 
+// ------------------------------------------------------------ build
+
 export function buildSubject(svgText) {
-  const { items, dropped } = parseSource(svgText);
+  const { items, dropped, warnings } = parseSource(svgText);
   const all = bbox(items.flatMap(i => [new THREE.Vector2(i.box.x0, i.box.y0), new THREE.Vector2(i.box.x1, i.box.y1)]));
   const k = 3.2 / Math.max(all.w, all.h);
   const cx = all.x0 + all.w / 2, cy = all.y0 + all.h / 2;
@@ -71,39 +350,77 @@ export function buildSubject(svgText) {
   const wb = { x0: (all.x0 - cx) * k, y0: -(all.y1 - cy) * k, w: all.w * k, h: all.h * k };
   const logoUv = (x, y) => [(x - wb.x0) / wb.w, (y - wb.y0) / wb.h];
 
-  const pills = [], solids = [];
-  for (const it of items) { const p = asPill(it); p ? pills.push(p) : solids.push(it); }
-  pills.sort((a, b) => a.cx - b.cx || a.cy - b.cy);   // left to right: low bands to high
+  const movers = [], solids = [];   // movers get gain slots, solids share FIXED
+  for (const it of items) { const p = detectPrimitive(it); p ? movers.push({ it, p }) : solids.push(it); }
+  movers.sort((a, b) => a.p.cx - b.p.cx || a.p.cy - b.p.cy);   // left to right: low bands to high
 
   const parts = [];
-  pills.forEach((p, i) => {
-    const c = W(p.cx, p.cy), r = p.r * k, base = p.half * k;
-    const geo = new THREE.CapsuleGeometry(r, 1e-4, 10, 36);
+  const counts = {};
+
+  // per-vertex attributes for a part built in its local frame (+y is the
+  // stretch axis, part centred on the origin, aCenter/aAxis place it).
+  // uvMode 'lathe': u around, v along the stretched length (capsule, rbox)
+  //        'box':   local-bounds normalized (sphere, ellipsoid, torus)
+  function finishPart(geo, o) {
     const pos = geo.attributes.position, lathe = geo.attributes.uv, n = pos.count;
-    const axis = p.vertical ? [0, 1] : [1, 0];
-    const pe = [axis[1], -axis[0]];
-    const aCenter = new Float32Array(n * 3), aAxis = new Float32Array(n * 2), aBase = new Float32Array(n), aIdx = new Float32Array(n);
+    const pe = [o.axis[1], -o.axis[0]];
+    const aCenter = new Float32Array(n * 3), aAxis = new Float32Array(n * 2), aBase = new Float32Array(n),
+          aIdx = new Float32Array(n), aStretch = new Float32Array(n), aColor = new Float32Array(n * 3);
     const uvLogo = new Float32Array(n * 2), uvPart = new Float32Array(n * 2);
+    const lb = o.uvMode === 'box' || o.uvMode === 'span' ? bbox2(geo) : null;
+    const vLen = 2 * (o.base + o.capHalf) || 1;
     for (let v = 0; v < n; v++) {
       const x = pos.getX(v), y = pos.getY(v);
-      const s = y >= 0 ? 1 : -1, yy = y + s * base;
-      aCenter.set([c.x, c.y, 0], v * 3); aAxis.set(axis, v * 2); aBase[v] = base; aIdx[v] = Math.min(i, FIXED - 1);
-      const wx = c.x + pe[0] * x + axis[0] * yy, wy = c.y + pe[1] * x + axis[1] * yy;
+      const s = y >= 0 ? 1 : -1, yy = y + s * o.base;
+      aCenter.set(o.c, v * 3); aAxis.set(o.axis, v * 2); aBase[v] = o.base; aIdx[v] = o.slot;
+      aStretch[v] = o.mode; aColor.set(o.color, v * 3);
+      const wx = o.c[0] + pe[0] * x + o.axis[0] * yy, wy = o.c[1] + pe[1] * x + o.axis[1] * yy;
       uvLogo.set(logoUv(wx, wy), v * 2);
-      uvPart.set([lathe.getX(v), (yy + base + r) / (2 * (base + r))], v * 2);
+      if (o.uvMode === 'lathe') uvPart.set([lathe.getX(v), (yy + o.base + o.capHalf) / vLen], v * 2);
+      else if (o.uvMode === 'span') uvPart.set([(x - lb.x0) / Math.max(lb.w, 1e-6), (yy + o.base + o.capHalf) / vLen], v * 2);
+      else uvPart.set([(x - lb.x0) / Math.max(lb.w, 1e-6), (y - lb.y0) / Math.max(lb.h, 1e-6)], v * 2);
     }
-    // the wire: rings and meridians, never the quads' diagonals
-    const idx = geo.index.array, edges = [];
-    const seen = new Set();
-    for (let t = 0; t < idx.length; t += 3) for (let e = 0; e < 3; e++) {
-      const a = idx[t + e], b = idx[t + (e + 1) % 3];
-      const du = Math.abs(lathe.getX(a) - lathe.getX(b)), dv = Math.abs(lathe.getY(a) - lathe.getY(b));
-      if (du > 1e-6 && dv > 1e-6) continue;
-      const kk = a < b ? a * 65536 + b : b * 65536 + a;
-      if (seen.has(kk)) continue;
-      seen.add(kk); edges.push(a, b);
+    return { aCenter, aAxis, aBase, aIdx, aStretch, aColor, uvLogo, uvPart };
+  }
+
+  movers.forEach(({ it, p }, i) => {
+    const c = W(p.cx, p.cy);
+    const axis = p.vertical === false ? [1, 0] : [0, 1];
+    const color = [it.color.r, it.color.g, it.color.b];
+    const slot = i < FIXED ? i : FIXED;   // overflow primitives stay rendered but share the fixed slot
+    const z = (it.lift || 0) * k;
+    let geo, mode, base = 0, capHalf = 0, uvMode = 'span';
+    if (p.type === 'capsule') {
+      const r = p.r * k;
+      geo = new THREE.CapsuleGeometry(r, 1e-4, 10, 36);
+      base = p.half * k; capHalf = r; mode = STRETCH.pull; uvMode = 'lathe';
+      counts.capsule = (counts.capsule || 0) + 1;
+    } else if (p.type === 'sphere') {
+      geo = new THREE.SphereGeometry(p.r * k, 36, 24);
+      mode = STRETCH.uniform; uvMode = 'box';
+      counts.sphere = (counts.sphere || 0) + 1;
+    } else if (p.type === 'ellipsoid') {
+      geo = new THREE.SphereGeometry(1, 36, 24);
+      geo.scale(p.b * k, p.a * k, p.b * k);
+      mode = STRETCH.axis; uvMode = 'box';
+      counts.ellipsoid = (counts.ellipsoid || 0) + 1;
+    } else if (p.type === 'rbox') {
+      const minor = Math.min(p.w, p.h) * k, major = Math.max(p.w, p.h) * k, rr = p.r * k;
+      const zHalf = Math.min(rr, Math.max(0.04, Math.min(0.6, (2 * it.area / it.perim) * k)));
+      const rad = Math.min(rr, minor * 0.49, zHalf * 0.99);
+      geo = new RoundedBoxGeometry(minor, 2 * rad, 2 * zHalf, 4, rad * 0.98);
+      base = major / 2 - rad; capHalf = rad; mode = STRETCH.pull;
+      counts.rbox = (counts.rbox || 0) + 1;
+    } else {   // torus
+      geo = new THREE.TorusGeometry(((p.R + p.r) / 2) * k, ((p.R - p.r) / 2) * k, 16, 48);
+      mode = STRETCH.uniform; uvMode = 'box';
+      counts.torus = (counts.torus || 0) + 1;
     }
-    parts.push({ geo, attrs: { aCenter, aAxis, aBase, aIdx, uvLogo, uvPart }, edges, points: uniquePoints(geo) });
+    if (!geo.index) geo = mergeVertices(geo);   // RoundedBoxGeometry is non-indexed
+    parts.push({
+      geo, attrs: finishPart(geo, { c: [c.x, c.y, z], axis, base, capHalf, slot, mode, color, uvMode }),
+      edges: p.type === 'rbox' ? creaseEdges(geo, 30) : gridEdges(geo), points: uniquePoints(geo),
+    });
   });
 
   solids.forEach((it) => {
@@ -114,27 +431,31 @@ export function buildSubject(svgText) {
     let geo = new THREE.ExtrudeGeometry(shape, {
       depth, bevelEnabled: true, bevelThickness: bt, bevelSize: bs, bevelOffset: -bs, bevelSegments: 5, curveSegments: 4,
     });
-    geo.translate(0, 0, -depth / 2);
+    geo.translate(0, 0, (it.lift || 0) * k - depth / 2);
     geo.deleteAttribute('uv');
     geo = toCreasedNormals(geo, 0.7);
     geo = mergeVertices(geo, 1e-5);
     const pos = geo.attributes.position, n = pos.count;
     const pb = bbox(it.pts.map(p => W(p.x, p.y)));
-    const aCenter = new Float32Array(n * 3), aAxis = new Float32Array(n * 2), aBase = new Float32Array(n), aIdx = new Float32Array(n).fill(FIXED);
+    const aCenter = new Float32Array(n * 3), aAxis = new Float32Array(n * 2), aBase = new Float32Array(n),
+          aIdx = new Float32Array(n).fill(FIXED), aStretch = new Float32Array(n), aColor = new Float32Array(n * 3);
     const uvLogo = new Float32Array(n * 2), uvPart = new Float32Array(n * 2);
+    const rgb = [it.color.r, it.color.g, it.color.b];
     for (let v = 0; v < n; v++) {
       const x = pos.getX(v), y = pos.getY(v);
       aAxis.set([0, 1], v * 2);
+      aColor.set(rgb, v * 3);
       uvLogo.set(logoUv(x, y), v * 2);
       uvPart.set([(x - pb.x0) / Math.max(pb.w, 1e-6), (y - pb.y0) / Math.max(pb.h, 1e-6)], v * 2);
     }
     // no points on an extruded path: its bevel rings would crowd them into a blur
-    parts.push({ geo, attrs: { aCenter, aAxis, aBase, aIdx, uvLogo, uvPart }, edges: creaseEdges(geo, 12), points: [] });
+    parts.push({ geo, attrs: { aCenter, aAxis, aBase, aIdx, aStretch, aColor, uvLogo, uvPart }, edges: creaseEdges(geo, 12), points: [] });
+    counts.extruded = (counts.extruded || 0) + 1;
   });
 
   // one geometry, one draw per layer
   const names = ['position', 'normal'];
-  const extra = { aCenter: 3, aAxis: 2, aBase: 1, aIdx: 1, uvLogo: 2, uvPart: 2 };
+  const extra = { aCenter: 3, aAxis: 2, aBase: 1, aIdx: 1, aStretch: 1, aColor: 3, uvLogo: 2, uvPart: 2 };
   let nv = 0, nt = 0, ne = 0, np = 0;
   for (const p of parts) { nv += p.geo.attributes.position.count; nt += p.geo.index.count; ne += p.edges.length; np += p.points.length; }
   const out = {};
@@ -160,17 +481,30 @@ export function buildSubject(svgText) {
     const g = new THREE.BufferGeometry();
     for (const [nm, a] of Object.entries(attrs)) g.setAttribute(nm, a);
     g.setAttribute('uv', attrs.uvLogo);
+    g.setAttribute('color', attrs.aColor);   // vertexColors materials multiply diffuse by this
     g.setIndex(new THREE.BufferAttribute(index, 1));
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 4);   // stretch moves vertices on the GPU
     return g;
   };
   return {
     mesh: mk(tri), lines: mk(lin), points: mk(pnt), attrs,
-    pills: pills.length, solids: solids.length, dropped, tris: nt / 3,
+    counts, movers: movers.length, dropped, tris: nt / 3,
     size: [wb.w, wb.h],
-    pillIdx: pills.map((_, i) => i),
+    warn: warnings.join(' ') || null,
   };
 }
+
+// 2D bounds of a geometry's position attribute (local frame)
+function bbox2(geo) {
+  const pos = geo.attributes.position;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (let v = 0; v < pos.count; v++) {
+    x0 = Math.min(x0, pos.getX(v)); y0 = Math.min(y0, pos.getY(v));
+    x1 = Math.max(x1, pos.getX(v)); y1 = Math.max(y1, pos.getY(v));
+  }
+  return { x0, y0, x1, y1, w: x1 - x0, h: y1 - y0 };
+}
+const lbX = bbox2;
 
 function uniquePoints(geo) {
   const pos = geo.attributes.position, seen = new Map(), out = [];
@@ -179,6 +513,21 @@ function uniquePoints(geo) {
     if (!seen.has(kk)) { seen.set(kk, v); out.push(v); }
   }
   return out;
+}
+
+// rings and meridians of a lathed/uv-gridded surface, never the quads' diagonals
+function gridEdges(geo) {
+  const pos = geo.attributes.position, uv = geo.attributes.uv, idx = geo.index.array;
+  const edges = [], seen = new Set();
+  for (let t = 0; t < idx.length; t += 3) for (let e = 0; e < 3; e++) {
+    const a = idx[t + e], b = idx[t + (e + 1) % 3];
+    const du = Math.abs(uv.getX(a) - uv.getX(b)), dv = Math.abs(uv.getY(a) - uv.getY(b));
+    if (du > 1e-6 && dv > 1e-6) continue;
+    const kk = a < b ? a * 65536 + b : b * 65536 + a;
+    if (seen.has(kk)) continue;
+    seen.add(kk); edges.push(a, b);
+  }
+  return edges;
 }
 
 // outline and creases of an extruded path: edges whose faces meet at more than `deg`
