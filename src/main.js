@@ -61,7 +61,10 @@ function applyLook() {
   applyTex();
   applyGround();
   document.getElementById('tex-note').hidden = !!L.textured;
-  document.querySelectorAll('#tex button, #uvmode button').forEach(b => { b.disabled = !L.textured || (b.dataset.v === 'image' && !textures.get('image').tex); });
+  document.querySelectorAll('#tex button, #uvmode button').forEach(b => {
+    const entry = b.closest('#tex') ? textures.get(b.dataset.v) : null;
+    b.disabled = !L.textured || !!entry?.disabled;
+  });
 }
 function applyTex() {
   const L = looks.get(state.look);
