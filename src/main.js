@@ -1,7 +1,7 @@
 // The app wiring: build the stage and subject, connect controls to state,
 // and run the frame loop.
 import * as THREE from 'three';
-import { U, VS, LINE_FS, POINT_FS } from './glsl.js';
+import { U, FIXED, VS, LINE_FS, POINT_FS } from './glsl.js';
 import { SOURCES, buildSubject } from './subject.js';
 import { looks, textures, RED } from './looks.js';
 import { initStage } from './stage.js';
@@ -203,14 +203,14 @@ function tick(now) {
     mode.update(mode, dt, pivot);
   } else {
     pivot.rotation.y *= Math.max(0, 1 - dt * 4); pivot.rotation.x *= Math.max(0, 1 - dt * 4);
-    if (mode) mode.t = pivot.rotation.y;
+    for (const e of turns.entries()) if (e.follows) e.t = pivot.rotation.y;
   }
   if (faceFront > 0) {
     faceFront -= dt;
     const d = camera.position.length();
     camera.position.lerp(new THREE.Vector3(0, 0, d), Math.min(1, dt * 6));
   }
-  updateGains(motionOn ? t : 0, dt, subject ? Math.min(subject.pills, 63) : 0);
+  updateGains(motionOn ? t : 0, dt, subject ? Math.min(subject.pills, FIXED) : 0);
   controls.update();
   U.uCamDist.value = camera.position.distanceTo(controls.target);
   stage.draw();
