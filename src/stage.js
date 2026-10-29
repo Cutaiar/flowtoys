@@ -94,7 +94,14 @@ export function initStage(canvas, stageEl, errEl) {
     if (persist) remember();
   }
   glowEl.addEventListener('input', () => setGlow(+glowEl.value));
-  subscribe('look', (id) => setGlow(looks.get(id)?.glow ?? 0));
+  // apply the look's default only when the look actually changes — the
+  // startup pick re-emits the persisted id, and must not clobber a saved glow
+  let lastLook = state.look;
+  subscribe('look', (id) => {
+    if (id === lastLook) return;
+    lastLook = id;
+    setGlow(looks.get(id)?.glow ?? 0);
+  });
   setGlow(state.glow ?? looks.get(state.look)?.glow ?? 0, false);
 
   // ------------------------------------------------------------ crossfade
@@ -107,10 +114,10 @@ export function initStage(canvas, stageEl, errEl) {
   const quadScene = new THREE.Scene();
   const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const quadMat = new THREE.ShaderMaterial({
-    uniforms: { tPrev: { value: null }, uFade: { value: 0 } },
+    uniforms: { tPrev: { value: null }, uFade: { value: 0 }, uSize: { value: new THREE.Vector2(1, 1) } },
     vertexShader: 'void main() { gl_Position = vec4(position.xy, 0.0, 1.0); }',
-    fragmentShader: `uniform sampler2D tPrev; uniform float uFade;
-      void main() { gl_FragColor = vec4(texture2D(tPrev, gl_FragCoord.xy / vec2(textureSize(tPrev, 0))).rgb, uFade); }`,
+    fragmentShader: `uniform sampler2D tPrev; uniform float uFade; uniform vec2 uSize;
+      void main() { gl_FragColor = vec4(texture2D(tPrev, gl_FragCoord.xy / uSize).rgb, uFade); }`,
     transparent: true, depthTest: false, depthWrite: false,
   });
   quadScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), quadMat));
@@ -187,6 +194,7 @@ export function initStage(canvas, stageEl, errEl) {
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
     if (fbTex) fbTex.dispose();
     fbTex = new THREE.FramebufferTexture(size.x, size.y);
+    quadMat.uniforms.uSize.value.copy(size);
     if (s) fit(s);
   }
 

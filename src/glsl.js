@@ -54,11 +54,9 @@ void subjectXform(inout vec3 p, inout vec3 n) {
   vec2 pe = vec2(aAxis.y, -aAxis.x);
   vec3 q = vec3(pe * p.x + aAxis * p.y, p.z) + aCenter;
   vec3 m = vec3(pe * n.x + aAxis * n.y, n.z);
-  float d = mix(0.002, 1.0, uDepth);
-  q.z *= d;
-  m = normalize(vec3(m.xy * d, m.z));
   // Float turn mode: per-part bob, phased by the part index (solids share
-  // the last slot, so they bob as one).
+  // the last slot, so they bob as one). The Float bob and Liquid wobble run
+  // before the depth squash so Flat still flattens them.
   if (uFloat > 0.0) {
     q.y += uFloat * 0.14 * sin(uTime * ${WF} + aIdx * 1.71);
     q.z += uFloat * 0.09 * cos(uTime * ${WF} + aIdx * 2.33);
@@ -72,6 +70,9 @@ void subjectXform(inout vec3 p, inout vec3 n) {
     q += m * wob(q) * amp;
     m = normalize(m - (gr - m * dot(gr, m)) * amp);
   }
+  float d = mix(0.002, 1.0, uDepth);
+  q.z *= d;
+  m = normalize(vec3(m.xy * d, m.z));
   p = q;
   n = m;
 }
