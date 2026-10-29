@@ -1,0 +1,14 @@
+{
+  "name": "flowtoys",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node tests/smoke.mjs",
+    "build": "node scripts/build-artifact.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "http-server": "^14.1.1",
+    "playwright": "1.49.1"
+  }
+}

@@ -29,3 +29,15 @@ even 30 fps.
 
 Flowtoys started as a prototype (`prototypes/subjects`) in
 [cutaiar/hyperspace](https://github.com/Cutaiar/hyperspace).
+
+## Development
+
+No build step for development: `index.html` loads `src/main.js` as a
+plain ES module (three.js comes from the jsDelivr import map), so any
+static server works — `python3 -m http.server` in this folder.
+
+```sh
+npm install                     # playwright, esbuild, http-server
+node tests/smoke.mjs            # headless check + look/source screenshots in tests/out/
+node scripts/build-artifact.mjs # bundles src/ into a single dist/index.html
+```
