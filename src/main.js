@@ -18,6 +18,7 @@ const stageEl = document.getElementById('stage');
 const errEl = document.getElementById('error');
 const stage = initStage(canvas, stageEl, errEl);   // throws when WebGL is missing
 const { scene, camera, controls, pivot, backdrop } = stage;
+const WHITE = new THREE.Color(0xffffff);
 
 // ------------------------------------------------------------ subject layers
 let subject = null, mesh = null, lines = null, points = null, material = null, hull = null;
@@ -52,11 +53,11 @@ function setSubject(svgText) {
   applyLook();
   applyUv();
   stage.fit(subject);
-  const bits = [];
-  if (subject.pills) bits.push(`${subject.pills} capsule${subject.pills === 1 ? '' : 's'}`);
-  if (subject.solids) bits.push(`${subject.solids} extruded path${subject.solids === 1 ? '' : 's'}`);
+  const KIND = { capsule: ['capsule', 'capsules'], sphere: ['sphere', 'spheres'], ellipsoid: ['ellipsoid', 'ellipsoids'], rbox: ['rounded box', 'rounded boxes'], torus: ['torus', 'tori'], extruded: ['extruded path', 'extruded paths'] };
+  const bits = Object.entries(subject.counts).filter(([, n]) => n).map(([k2, n]) => `${n} ${KIND[k2][n === 1 ? 0 : 1]}`);
   if (subject.dropped) bits.push('backdrop dropped');
   bits.push(`${subject.tris.toLocaleString()} tris`);
+  if (subject.warn) ui.showError(subject.warn);
   document.getElementById('stats').textContent = `${state.source === 'custom' ? 'Your SVG' : SOURCES[state.source].name} · ${bits.join(' · ')}`;
 }
 
@@ -65,6 +66,7 @@ function applyLook() {
   const L = looks.get(state.look);
   if (material) material.dispose();
   material = L.mat();
+  if (!material.isShaderMaterial) material.userData.srcBase = material.color.clone();
   mesh.material = material;
   lines.visible = points.visible = !!L.wire;
   backdrop.visible = !!L.backdrop;
@@ -77,6 +79,15 @@ function applyLook() {
     const entry = b.closest('#tex') ? textures.get(b.dataset.v) : null;
     b.disabled = !L.textured || !!entry?.disabled;
   });
+  applyColor();
+}
+function applyColor() {
+  const src = state.color === 'source';
+  U.uSrcColor.value = src ? 1 : 0;   // shared: mesh, line and point shaders all read it
+  if (material.isShaderMaterial) return;
+  material.vertexColors = src;
+  material.color.copy(src ? WHITE : material.userData.srcBase);   // a dark diffuse (Pearl) would swallow vertex colours
+  material.needsUpdate = true;
 }
 function applyTex() {
   stage.xfade();   // capture the outgoing frame for the crossfade
@@ -103,11 +114,23 @@ function applyGround() {
 // ------------------------------------------------------------ controls
 function useSource(v) {
   stage.xfade();   // capture the outgoing frame for the crossfade
-  try { setSubject(v === 'custom' ? SOURCES.custom.svg : SOURCES[v].svg); errEl.hidden = true; }
+  try { setSubject(v === 'custom' ? SOURCES.custom.svg : SOURCES[v].svg); errEl.hidden = !subject?.warn; }
   catch (e) { ui.showError(e.message || 'That SVG could not be read.'); }
 }
 
 // registry-driven segmented controls
+// Colour: "Look's own" or the SVG's own fills/strokes (aColor), mounted into
+// the Look section without touching index.html.
+{
+  const label = document.createElement('div');
+  label.className = 'label'; label.textContent = 'Colour';
+  const seg = document.createElement('div');
+  seg.className = 'seg'; seg.id = 'color';
+  ui.panels.get('sec-look').append(label, seg);
+}
+ui.fillSeg('color', [{ id: 'look', name: "Look's own" }, { id: 'source', name: 'Source colours' }]);
+ui.bindSeg('color', applyColor);
+
 ui.fillSeg('look', looks.entries());
 ui.fillSeg('tex', textures.entries());
 ui.fillSeg('audio', motion.entries());
@@ -227,7 +250,7 @@ function tick(now) {
     const d = camera.position.length();
     camera.position.lerp(new THREE.Vector3(0, 0, d), Math.min(1, dt * 6));
   }
-  updateGains(motionOn ? t : 0, dt, subject ? Math.min(subject.pills, FIXED) : 0);
+  updateGains(motionOn ? t : 0, dt, subject ? Math.min(subject.movers, FIXED) : 0);
   controls.update();
   U.uCamDist.value = camera.position.distanceTo(controls.target);
   stage.draw();
@@ -235,7 +258,7 @@ function tick(now) {
 }
 
 // first frame: restore the remembered controls, then build
-for (const g of ['source', 'look', 'tex', 'uvmode', 'audio', 'spin', 'ground']) ui.pick(g, String(state[g]));
+for (const g of ['source', 'look', 'color', 'tex', 'uvmode', 'audio', 'spin', 'ground']) ui.pick(g, String(state[g]));
 depthEl.value = state.depth; amountEl.value = state.amount; amountOut.textContent = (+state.amount).toFixed(2);
 useSource(state.source);
 requestAnimationFrame(tick);
