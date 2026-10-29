@@ -142,7 +142,7 @@ export function initStage(canvas, stageEl, errEl) {
     const dt = Math.min(0.05, Math.max(0, (now - draw.t) / 1000)); draw.t = now;
 
     // uLevel: the mean bar gain, whatever the motion source (1 at rest)
-    const n = Math.min(subject?.pills ?? 0, FIXED);
+    const n = Math.min(subject?.movers ?? 0, FIXED);
     if (n > 0) {
       let s = 0;
       for (let i = 0; i < n; i++) s += U.uGain.value[i];
