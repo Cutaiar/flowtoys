@@ -13,6 +13,7 @@ export const U = {
   uUvMode: { value: 0 },
   uCamDist: { value: 9 },
   uDpr: { value: 1 },
+  uSrcColor: { value: 0 },   // 1 = tint with each part's own SVG colour (aColor)
 };
 
 // the subject's one vertex transform, shared by every material: a pill's
@@ -134,7 +135,8 @@ void main() {
     float ink = 1.0 - smoothstep(r - w, r + w, d);
     col = mix(uPaper, mix(uInk, vSCol, uSrcColor), ink);
   } else if (uMode == 2) {
-    vec3 base = uHasMap == 1 ? texture2D(uMap, vUv).rgb : mix(uBase, vSCol, uSrcColor);
+    vec3 base = uHasMap == 1 ? texture2D(uMap, vUv).rgb * mix(vec3(1.0), vSCol, uSrcColor)
+                            : mix(uBase, vSCol, uSrcColor);
     float band = lam > 0.72 ? 1.0 : lam > 0.32 ? 0.72 : 0.45;
     col = base * band;
     vec3 H = normalize(L + V);
@@ -152,21 +154,26 @@ void main() {
 export const LINE_FS = /* glsl */`
 uniform vec3 uColor;
 uniform float uAlpha;
+uniform float uSrcColor;
 varying float vNear;
+varying vec3 vSCol;
 void main() {
-  gl_FragColor = vec4(uColor, (0.1 + 0.9 * vNear * vNear) * uAlpha);
+  vec3 c = uColor * mix(vec3(1.0), vSCol, uSrcColor);
+  gl_FragColor = vec4(c, (0.1 + 0.9 * vNear * vNear) * uAlpha);
   #include <colorspace_fragment>
 }
 `;
 
 export const POINT_FS = /* glsl */`
 uniform vec3 uColor;
+uniform float uSrcColor;
 varying float vNear;
+varying vec3 vSCol;
 void main() {
   vec2 d = gl_PointCoord * 2.0 - 1.0;
   float a = (0.3 + 0.7 * vNear) * (1.0 - smoothstep(0.7, 1.0, length(d)));
   if (a <= 0.0) discard;
-  gl_FragColor = vec4(uColor, a);
+  gl_FragColor = vec4(uColor * mix(vec3(1.0), vSCol, uSrcColor), a);
   #include <colorspace_fragment>
 }
 `;

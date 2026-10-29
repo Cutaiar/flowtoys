@@ -288,6 +288,7 @@ export function parseSource(svgText) {
   const texts = doc.querySelectorAll('text').length;
   const data = new SVGLoader().parse(svgText);
   const items = [];
+  let translucent = 0;   // semi-transparent parts: the mesh pipeline has no per-part alpha, so warn
   for (const path of data.paths) {
     const style = path.userData?.style || {};
     if (hidden(path.userData?.node, style)) continue;
@@ -297,6 +298,7 @@ export function parseSource(svgText) {
     const strokeA = +(style.strokeOpacity ?? 1) * +(style.opacity ?? 1);
     const hasFill = fill !== 'none' && fill !== 'transparent' && fillA > 0;
     const hasStroke = stroke && stroke !== 'none' && stroke !== 'transparent' && strokeA > 0;
+    if ((hasFill && fillA < 1) || (hasStroke && strokeA < 1)) translucent++;
     const color = colorOf(fill, gradients) || colorOf(stroke, gradients) || new THREE.Color(1, 1, 1);
     if (hasFill) {
       for (const shape of SVGLoader.createShapes(path)) {
@@ -327,6 +329,7 @@ export function parseSource(svgText) {
   }
   const warnings = [];
   if (texts) warnings.push(`${texts} <text> element${texts === 1 ? '' : 's'} skipped — convert text to outlines to include ${texts === 1 ? 'it' : 'them'}.`);
+  if (translucent) warnings.push(`${translucent} semi-transparent part${translucent === 1 ? ' renders' : 's render'} opaque — partial fill/stroke opacity isn't supported yet.`);
   // a path that covers the whole artboard behind the rest is a backdrop, not the subject
   let dropped = 0;
   if (items.length > 1) {

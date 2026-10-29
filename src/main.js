@@ -17,6 +17,7 @@ const stageEl = document.getElementById('stage');
 const errEl = document.getElementById('error');
 const stage = initStage(canvas, stageEl, errEl);   // throws when WebGL is missing
 const { scene, camera, controls, pivot, backdrop } = stage;
+const WHITE = new THREE.Color(0xffffff);
 
 // ------------------------------------------------------------ subject layers
 let subject = null, mesh = null, lines = null, points = null, material = null;
@@ -55,6 +56,7 @@ function applyLook() {
   const L = looks.get(state.look);
   if (material) material.dispose();
   material = L.mat();
+  if (!material.isShaderMaterial) material.userData.srcBase = material.color.clone();
   mesh.material = material;
   lines.visible = points.visible = !!L.wire;
   backdrop.visible = !!L.backdrop;
@@ -69,8 +71,11 @@ function applyLook() {
 }
 function applyColor() {
   const src = state.color === 'source';
-  if (material.isShaderMaterial) material.uniforms.uSrcColor.value = src ? 1 : 0;
-  else { material.vertexColors = src; material.needsUpdate = true; }
+  U.uSrcColor.value = src ? 1 : 0;   // shared: mesh, line and point shaders all read it
+  if (material.isShaderMaterial) return;
+  material.vertexColors = src;
+  material.color.copy(src ? WHITE : material.userData.srcBase);   // a dark diffuse (Pearl) would swallow vertex colours
+  material.needsUpdate = true;
 }
 function applyTex() {
   const L = looks.get(state.look);
