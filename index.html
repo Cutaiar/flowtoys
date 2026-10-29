@@ -1,4 +1,4 @@
-<title>Hyperspace Subjects</title>
+<title>Flowtoys</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -160,8 +160,8 @@ label.btn { display: inline-flex; align-items: center; }
 
   <aside class="panel">
     <div class="brand">
-      <h1>Hyperspace Subjects</h1>
-      <p>Vector sources as the subject: flat, or lifted into 3D with a material on top.</p>
+      <h1>Flowtoys</h1>
+      <p>A toy for the Wispr Flow logo: flat, or lifted into 3D with a material on top.</p>
     </div>
 
     <section class="group" aria-labelledby="l-source">
@@ -1019,7 +1019,7 @@ document.getElementById('form-3d').addEventListener('click', () => {
     renderer.render(scene, camera);
     canvas.toBlob(async (blob) => {
       if (!blob) return;
-      try { await dl.save({ filename: `hyperspace-subject-${state.source}-${state.look}.png`, data: blob }); }
+      try { await dl.save({ filename: `flowtoys-${state.source}-${state.look}.png`, data: blob }); }
       catch (e) { if (e?.code === 'unavailable' || e?.code === 'not_granted') b.hidden = true; }
     }, 'image/png');
   });
