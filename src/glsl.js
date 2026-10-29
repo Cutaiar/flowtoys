@@ -158,7 +158,7 @@ uniform float uSrcColor;
 varying float vNear;
 varying vec3 vSCol;
 void main() {
-  vec3 c = uColor * mix(vec3(1.0), vSCol, uSrcColor);
+  vec3 c = mix(uColor, vSCol, uSrcColor);
   gl_FragColor = vec4(c, (0.1 + 0.9 * vNear * vNear) * uAlpha);
   #include <colorspace_fragment>
 }
@@ -173,7 +173,8 @@ void main() {
   vec2 d = gl_PointCoord * 2.0 - 1.0;
   float a = (0.3 + 0.7 * vNear) * (1.0 - smoothstep(0.7, 1.0, length(d)));
   if (a <= 0.0) discard;
-  gl_FragColor = vec4(uColor * mix(vec3(1.0), vSCol, uSrcColor), a);
+  vec3 c = mix(uColor, vSCol, uSrcColor);   // replace the tint outright — multiplying a coloured dot would crush non-red sources to black
+  gl_FragColor = vec4(c, a);
   #include <colorspace_fragment>
 }
 `;
